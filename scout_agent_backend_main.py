@@ -63,8 +63,22 @@ def detect_violations(file_stream):
 
     return issues
 
-@app.route("/analyze", methods=["POST"])
+@app.route("/analyze", methods=["GET", "POST"])
 def analyze():
+    if request.method == "GET":
+        return '''
+        <html>
+        <head><title>Scout Agent Upload</title></head>
+        <body style="font-family: sans-serif; padding: 2rem;">
+            <h2>Upload PDF for Analysis</h2>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="file" accept="application/pdf" required />
+                <button type="submit">Analyze</button>
+            </form>
+        </body>
+        </html>
+        '''
+
     if 'file' not in request.files:
         return jsonify({"error": "No file part in request"}), 400
 
@@ -73,9 +87,9 @@ def analyze():
         return jsonify({"error": "No file selected"}), 400
 
     try:
-        file.stream.seek(0)  # Ensure file pointer is at start
+        file.stream.seek(0)
         findings = detect_violations(file.stream)
-        return jsonify({"results": findings})
+        return jsonify({"flags": findings})  # ✅ matches frontend
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
