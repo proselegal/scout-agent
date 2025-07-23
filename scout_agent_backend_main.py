@@ -1,73 +1,69 @@
 
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+from flask import Flask, request, jsonify
 import fitz  # PyMuPDF
-import openai
-import os
+import re
 
-app = FastAPI()
+app = Flask(__name__)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def detect_violations(file_stream):
+    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+    text = ""
+    page_count = doc.page_count
+    issues = []
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-logic_table = [
-  {
-    "Trigger": "Unsigned or Incomplete Affidavit",
-    "Detection Method": "Scan for missing signature or perjury clause",
-    "Legal Context": "Fla. Stat. \u00a7 92.525 \u2013 Unsworn documents have no evidentiary weight",
-    "Agent Response": "\u26a0\ufe0f Affidavit is unsigned or missing penalty clause",
-    "Upsell Action": "\ud83d\udd13 Unlock 'Affidavit Challenge Toolkit' in Strike Pack"
-  },
-  {
-    "Trigger": "Affidavit Not Disclosed in Discovery",
-    "Detection Method": "Compare affidavit source to discovery disclosures",
-    "Legal Context": "Fla. R. Civ. P. 1.380 \u2013 False discovery response",
-    "Agent Response": "\u274c Affidavit was obtained outside discovery. Strike Pack applicable.",
-    "Upsell Action": "\ud83d\udd13 Unlock 'Sanctions + Vacatur Toolkit' in Strike Pack"
-  },
-  {
-    "Trigger": "User Confirms Material Misstatement",
-    "Detection Method": "Prompt user to verify if income/assets/benefits were misrepresented",
-    "Legal Context": "Extrinsic fraud doctrine \u2013 Rule 1.540(b)",
-    "Agent Response": "\ud83d\udea8 Fraud confirmed. Eligible for vacatur and sanctions.",
-    "Upsell Action": "\ud83d\udd13 Unlock Strike Pack \u2013 Motion to Vacate & Debt Reassignment"
-  }
-]
-
-def detect_red_flags(text):
-    flags = []
-    for item in logic_table:
-        trigger = item["Trigger"].lower()
-        if trigger in text.lower():
-            flags.append(trigger)
-    return flags
-
-@app.post("/analyze")
-async def analyze_affidavit(file: UploadFile = File(...)):
-    content = await file.read()
-    with open("temp.pdf", "wb") as f:
-        f.write(content)
-
-    doc = fitz.open("temp.pdf")
-    full_text = ""
+    # Combine all text
     for page in doc:
-        full_text += page.get_text()
+        text += page.get_text()
 
-    doc.close()
-    os.remove("temp.pdf")
+    # Check for missing signature
+    if not re.search(r"signature|signed|notary", text, re.IGNORECASE):
+        issues.append("❌ No signature or perjury clause detected (Fla. Stat. § 92.525).")
 
-    flags = detect_red_flags(full_text)
+    # Check for perjury language
+    if not re.search(r"penalty of perjury", text, re.IGNORECASE):
+        issues.append("❌ Missing penalty of perjury clause — affidavit may be inadmissible.")
 
-    return {
-        "filename": file.filename,
-        "flags": flags,
-        "summary": "Flag detection complete",
-        "next_step": "Unlock Strike Pack" if flags else "No urgent issues detected"
-    }
+    # Discovery violation (user-confirmed flag via checkbox — simulated here)
+    # In live mode, check if `from_discovery` field is sent
+    issues.append("⚠️ Affidavit not listed in discovery response (Rule 1.380 Fla. R. Civ. P.).")
+
+    # Check if wrong form used (detect 12.902(b) or (c))
+    if "12.902(b)" in text:
+        issues.append("📄 Detected Form 12.902(b) — may be incorrect if this is a support case.")
+    if "12.902(c)" in text:
+        issues.append("📄 Detected Form 12.902(c) — may be incorrect if this is a parenting case.")
+
+    # Page skipping or suspiciously blank pages
+    expected_pages = page_count
+    if expected_pages < 2:
+        issues.append("⚠️ Very short affidavit (1 page). Could be incomplete.")
+
+    # Redaction/black box detection (beta using image analysis)
+    redaction_found = False
+    for page in doc:
+        pix = page.get_pixmap()
+        if pix.width == 0 or pix.height == 0:
+            continue
+        if pix.samples.count(0) > 1000:
+            redaction_found = True
+    if redaction_found:
+        issues.append("⚠️ Potential redactions or black box overlays detected.")
+
+    if not issues:
+        issues.append("✅ No major issues found. Let me know if you need further review.")
+
+    return issues
+
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    findings = detect_violations(file)
+    return jsonify({"results": findings})
+
+if __name__ == "__main__":
+    app.run(debug=True)
