@@ -2,5 +2,12 @@ services:
   - type: web
     name: scout-agent
     env: python
+    plan: free  # or starter if using a custom domain
+    runtime: python
+    region: oregon  # or your preferred region
     buildCommand: ""
-    startCommand: uvicorn scout_agent_backend_main:app --host 0.0.0.0 --port 10000
+    startCommand: gunicorn scout_agent_backend_main:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PORT
+        value: 10000
+    autoDeploy: true
