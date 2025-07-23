@@ -1,19 +1,26 @@
-
 from flask import Flask, request, jsonify
 import fitz  # PyMuPDF
 import re
+import io
 
 app = Flask(__name__)
 
 def detect_violations(file_stream):
-    doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+    try:
+        doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+    except Exception as e:
+        return [f"❌ Failed to process PDF: {str(e)}"]
+
     text = ""
     page_count = doc.page_count
     issues = []
 
     # Combine all text
     for page in doc:
-        text += page.get_text()
+        try:
+            text += page.get_text()
+        except:
+            continue
 
     # Check for missing signature
     if not re.search(r"signature|signed|notary", text, re.IGNORECASE):
@@ -23,29 +30,31 @@ def detect_violations(file_stream):
     if not re.search(r"penalty of perjury", text, re.IGNORECASE):
         issues.append("❌ Missing penalty of perjury clause — affidavit may be inadmissible.")
 
-    # Discovery violation (user-confirmed flag via checkbox — simulated here)
-    # In live mode, check if `from_discovery` field is sent
+    # Placeholder discovery violation notice
     issues.append("⚠️ Affidavit not listed in discovery response (Rule 1.380 Fla. R. Civ. P.).")
 
-    # Check if wrong form used (detect 12.902(b) or (c))
+    # Detect use of wrong form
     if "12.902(b)" in text:
         issues.append("📄 Detected Form 12.902(b) — may be incorrect if this is a support case.")
     if "12.902(c)" in text:
         issues.append("📄 Detected Form 12.902(c) — may be incorrect if this is a parenting case.")
 
-    # Page skipping or suspiciously blank pages
-    expected_pages = page_count
-    if expected_pages < 2:
+    # Check for very short affidavit
+    if page_count < 2:
         issues.append("⚠️ Very short affidavit (1 page). Could be incomplete.")
 
-    # Redaction/black box detection (beta using image analysis)
+    # Detect possible redaction
     redaction_found = False
-    for page in doc:
-        pix = page.get_pixmap()
-        if pix.width == 0 or pix.height == 0:
-            continue
-        if pix.samples.count(0) > 1000:
-            redaction_found = True
+    try:
+        for page in doc:
+            pix = page.get_pixmap()
+            black_pixels = pix.samples.count(0)
+            if black_pixels > 10000:
+                redaction_found = True
+                break
+    except:
+        issues.append("⚠️ Error during redaction scan.")
+
     if redaction_found:
         issues.append("⚠️ Potential redactions or black box overlays detected.")
 
@@ -57,13 +66,18 @@ def detect_violations(file_stream):
 @app.route("/analyze", methods=["POST"])
 def analyze():
     if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
+        return jsonify({"error": "No file part in request"}), 400
+
     file = request.files['file']
     if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+        return jsonify({"error": "No file selected"}), 400
 
-    findings = detect_violations(file)
-    return jsonify({"results": findings})
+    try:
+        file.stream.seek(0)  # Ensure file pointer is at start
+        findings = detect_violations(file.stream)
+        return jsonify({"results": findings})
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False, host="0.0.0.0", port=5000)
